@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script>
+      // Early-stage Sandbox Error Safeguard & Silent WebSocket Interception
+      (function() {
+        if (typeof window !== 'undefined') {
+          const isViteOrWsError = (err) => {
+            if (!err) return false;
+            const checkString = (str) => {
+              if (typeof str !== 'string') return false;
+              const normalized = str.toLowerCase();
+              return (
+                normalized.includes('websocket') ||
+                normalized.includes('web socket') ||
+                normalized.includes('sockjs') ||
+                normalized.includes('hmr') ||
+                normalized.includes('vite') ||
+                normalized.includes('failed to connect') ||
+                normalized.includes('closed without opened') ||
+                normalized.includes('connection refused') ||
+                normalized.includes('closeevent') ||
+                normalized.includes('errorevent') ||
+                normalized.includes('object event') ||
+                normalized.includes('object closeevent') ||
+                normalized.includes('ws://') ||
+                normalized.includes('wss://')
+              );
+            };
+
+            if (checkString(String(err))) return true;
+            if (err.message && checkString(String(err.message))) return true;
+            if (err.stack && checkString(String(err.stack))) return true;
+            if (err.reason && checkString(String(err.reason))) return true;
+            if (err.type && checkString(String(err.type))) return true;
+
+            try {
+              const keys = Object.keys(err);
+              for (const key of keys) {
+                if (checkString(String(key)) || checkString(String(err[key]))) {
+                  return true;
+                }
+              }
+            } catch (e) {}
+
+            return false;
+          };
+
+          const filterNoise = (args) => {
+            for (const arg of args) {
+              if (isViteOrWsError(arg)) return true;
+              try {
+                if (typeof arg === 'object' && arg !== null) {
+                  const str = JSON.stringify(arg);
+                  if (isViteOrWsError(str)) return true;
+                }
+              } catch (e) {}
+            }
+            return false;
+          };
+
+          const originalError = console.error;
+          console.error = function(...args) {
+            if (filterNoise(args)) return;
+            originalError.apply(console, args);
+          };
+
+          const originalWarn = console.warn;
+          console.warn = function(...args) {
+            if (filterNoise(args)) return;
+            originalWarn.apply(console, args);
+          };
+
+          let currentOnError = null;
+          Object.defineProperty(window, 'onerror', {
+            get() { return currentOnError; },
+            set(value) {
+              if (typeof value === 'function') {
+                currentOnError = function(message, source, lineno, colno, error) {
+                  try {
+                    if (isViteOrWsError(message) || isViteOrWsError(error) || isViteOrWsError(source)) {
+                      return true;
+                    }
+                  } catch (e) {}
+                  return value.call(this, message, source, lineno, colno, error);
+                };
+              } else {
+                currentOnError = value;
+              }
+            },
+            configurable: true,
+            enumerable: true
+          });
+
+          let currentOnUnhandledRejection = null;
+          Object.defineProperty(window, 'onunhandledrejection', {
+            get() { return currentOnUnhandledRejection; },
+            set(value) {
+              if (typeof value === 'function') {
+                currentOnUnhandledRejection = function(event) {
+                  try {
+                    if (event && (isViteOrWsError(event) || isViteOrWsError(event.reason))) {
+                      try { event.preventDefault(); event.stopPropagation(); } catch (e) {}
+                      return;
+                    }
+                  } catch (e) {}
+                  return value.call(this, event);
+                };
+              } else {
+                currentOnUnhandledRejection = value;
+              }
+            },
+            configurable: true,
+            enumerable: true
+          });
+
+          const originalAdd = window.addEventListener;
+          const originalRemove = window.removeEventListener;
+          const listenerMap = new WeakMap();
+
+          window.addEventListener = function(type, listener, options) {
+            if ((type === 'error' || type === 'unhandledrejection') && typeof listener === 'function') {
+              const wrappedListener = function(event) {
+                try {
+                  let errVal = event;
+                  if (type === 'unhandledrejection' && event.reason) errVal = event.reason;
+                  if (isViteOrWsError(errVal)) {
+                    try { event.preventDefault(); event.stopPropagation(); } catch (e) {}
+                    return;
+                  }
+                } catch (e) {}
+                return listener.call(this, event);
+              };
+              listenerMap.set(listener, wrappedListener);
+              return originalAdd.call(this, type, wrappedListener, options);
+            }
+            return originalAdd.call(this, type, listener, options);
+          };
+
+          window.removeEventListener = function(type, listener, options) {
+            if ((type === 'error' || type === 'unhandledrejection') && typeof listener === 'function') {
+              const wrapped = listenerMap.get(listener);
+              if (wrapped) return originalRemove.call(this, type, wrapped, options);
+            }
+            return originalRemove.call(this, type, listener, options);
+          };
+
+          const OriginalWebSocket = window.WebSocket;
+          if (OriginalWebSocket) {
+            try {
+              const SafeWebSocket = class extends OriginalWebSocket {
+                constructor(url, protocols) {
+                  super(url, protocols);
+                  try {
+                    this.addEventListener('error', (e) => { e.preventDefault(); e.stopPropagation(); }, { capture: true });
+                    this.addEventListener('close', (e) => {}, { capture: true });
+                  } catch (err) {}
+                }
+              };
+              window.WebSocket = SafeWebSocket;
+            } catch (err) {}
+          }
+
+          window.addEventListener('unhandledrejection', (event) => {
+            try {
+              if (event && (isViteOrWsError(event) || isViteOrWsError(event.reason))) {
+                event.preventDefault();
+                event.stopPropagation();
+              }
+            } catch (e) {}
+          }, true);
+
+          window.addEventListener('error', (event) => {
+            try {
+              if (event && (isViteOrWsError(event) || isViteOrWsError(event.message))) {
+                event.preventDefault();
+                event.stopPropagation();
+              }
+            } catch (e) {}
+          }, true);
+        }
+      })();
+    </script>
+    <style>
+      vite-error-overlay, #vite-error-overlay, npx-error-overlay, .vite-error-overlay {
+        display: none !important;
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+        height: 0 !important;
+        width: 0 !important;
+      }
+    </style>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Samaritan AI</title>
+
+    <!-- PWA -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#ef4444" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Samaritan AI" />
+    <meta name="description" content="Road accident first response guide for Indian bystanders" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

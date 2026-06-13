@@ -1,0 +1,11 @@
+{
+  "name": "Samaritan AI",
+  "description": "An emergency response guide and legal shield for road accident bystanders in India.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
