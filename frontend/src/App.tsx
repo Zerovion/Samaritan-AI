@@ -265,6 +265,18 @@ const OFFLINE_MAPS_SECTORS: Record<string, OfflineSector> = {
 export default function App() {
   // Navigation & Multi-Screen State
   const [emergencyActive, setEmergencyActive] = useState<boolean>(false);
+  const [goldenHourStart, setGoldenHourStart] = useState<number | null>(null);
+  const [goldenHourElapsed, setGoldenHourElapsed] = useState<number>(0); // seconds elapsed
+
+  // Nearest Hospital state
+  const [nearestHospital, setNearestHospital] = useState<{
+    name: string;
+    address: string;
+    phone: string;
+    distance: string | null;
+    fallback: boolean;
+    loading: boolean;
+  }>({ name: "", address: "", phone: "112", distance: null, fallback: false, loading: false });
 
   // ── Shake-to-activate state ──────────────────────────────────────────────
   const [shakeConfirmVisible, setShakeConfirmVisible] = useState(false);
@@ -465,6 +477,30 @@ export default function App() {
       if (downloadTimerRef.current) clearInterval(downloadTimerRef.current);
     };
   }, []);
+
+  // Golden Hour Timer — tick every second while emergency is active
+  useEffect(() => {
+    if (!emergencyActive || goldenHourStart === null) return;
+    const interval = setInterval(() => {
+      setGoldenHourElapsed(Math.floor((Date.now() - goldenHourStart) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [emergencyActive, goldenHourStart]);
+
+  // Golden Hour Timer — helpers
+  const formatGoldenTime = (elapsed: number) => {
+    const totalSeconds = Math.max(0, 3600 - elapsed);
+    const m = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+    const s = (totalSeconds % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
+
+  const getGoldenHourColor = (elapsed: number) => {
+    const minutes = elapsed / 60;
+    if (minutes >= 50) return { text: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", glow: "shadow-[0_0_8px_rgba(239,68,68,0.4)]" };
+    if (minutes >= 30) return { text: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30", glow: "shadow-[0_0_8px_rgba(245,158,11,0.3)]" };
+    return { text: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", glow: "" };
+  };
 
   // Load state from local storage to endure emergencies
   useEffect(() => {
@@ -852,7 +888,18 @@ export default function App() {
     setShowVictimSelector(false);
     setCurrentScreen("voice");
     setActiveStep(1);
-    
+    setGoldenHourStart(Date.now());
+    setGoldenHourElapsed(0);
+
+    // Fetch nearest hospital via GPS
+    if (telemetry.latitude && telemetry.longitude) {
+      setNearestHospital(prev => ({ ...prev, loading: true }));
+      fetch(`/api/nearest-hospital?lat=${telemetry.latitude}&lng=${telemetry.longitude}`)
+        .then(r => r.json())
+        .then(data => setNearestHospital({ ...data, loading: false }))
+        .catch(() => setNearestHospital({ name: "Hospital lookup failed", address: "Call 112 for dispatch", phone: "112", distance: null, fallback: true, loading: false }));
+    }
+
     const scenarioNames = {
       cardiac: "Cardiac Arrest & Standard CPR",
       bite: "Snake & Venomous Bite Trauma",
@@ -909,6 +956,8 @@ export default function App() {
     if (window.confirm("Are you sure you want to stop this rescue workflow? All captured proof logs will be stored in your current state.")) {
       setEmergencyActive(false);
       setCprActive(false);
+      setGoldenHourStart(null);
+      setGoldenHourElapsed(0);
       try {
         if ('speechSynthesis' in window) {
           window.speechSynthesis.cancel();
@@ -1679,6 +1728,18 @@ export default function App() {
 
             {/* Real-time Location Indicator */}
             <div className="flex flex-wrap items-center gap-2.5 text-xs font-mono">
+
+              {/* Golden Hour Timer */}
+              {goldenHourStart !== null && (() => {
+                const gc = getGoldenHourColor(goldenHourElapsed);
+                const isExpired = goldenHourElapsed >= 3600;
+                return (
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono font-bold text-[11px] uppercase tracking-wider transition-all ${gc.bg} ${gc.border} ${gc.text} ${gc.glow}`}>
+                    <Clock className="w-3 h-3" />
+                    <span>{isExpired ? "GOLDEN HR ELAPSED" : formatGoldenTime(goldenHourElapsed)}</span>
+                  </div>
+                );
+              })()}
               <button 
                 onClick={() => setShowLocationSettings(!showLocationSettings)}
                 className="flex items-center gap-1.5 px-2.5 py-1 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 text-white/80 transition-colors"
@@ -2671,23 +2732,43 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Nearest Hospital Card */}
+                  {/* Nearest Hospital Card — live GPS lookup */}
                   <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4 mt-2 font-mono">
                     <div className="p-3 rounded-lg bg-emerald-500/10 text-emerald-400 font-mono text-center text-xs shrink-0 font-bold border border-emerald-500/20">
                       ✚ NEAREST HOSPITAL
                     </div>
-                    <div className="flex-1">
-                      <span className="text-xs font-bold text-white block">Dr. DY Patil Superspeciality Hospital</span>
-                      <p className="text-xs text-zinc-400 mt-0.5 font-sans leading-relaxed">
-                        Highway Sector NH48 Junction — 1.8km distance. Level-1 Trauma surgery unit active with orthopedic beds.
-                      </p>
-                    </div>
-                    <a
-                      href="tel:+912027405000"
-                      className="px-3.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-mono text-[#4DABFF] hover:text-white transition-colors"
-                    >
-                      Call Clinic Desk
-                    </a>
+                    {nearestHospital.loading ? (
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 text-xs text-zinc-400">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                          <span>Locating nearest trauma centre via GPS...</span>
+                        </div>
+                      </div>
+                    ) : nearestHospital.name ? (
+                      <>
+                        <div className="flex-1">
+                          <span className="text-xs font-bold text-white block">
+                            {nearestHospital.name}
+                            {nearestHospital.fallback && <span className="ml-2 text-[10px] text-amber-400 font-normal">(estimated)</span>}
+                          </span>
+                          <p className="text-xs text-zinc-400 mt-0.5 font-sans leading-relaxed">
+                            {nearestHospital.address}
+                            {nearestHospital.distance && <span className="text-emerald-400 font-mono ml-1">— {nearestHospital.distance}</span>}
+                          </p>
+                        </div>
+                        <a
+                          href={`tel:${nearestHospital.phone}`}
+                          className="px-3.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-mono text-[#4DABFF] hover:text-white transition-colors shrink-0"
+                        >
+                          Call Hospital
+                        </a>
+                      </>
+                    ) : (
+                      <div className="flex-1">
+                        <span className="text-xs font-bold text-white block">Enable GPS for hospital lookup</span>
+                        <p className="text-xs text-zinc-400 mt-0.5 font-sans">Allow location access to find the nearest trauma centre.</p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Offline Maps Caching and Vector Navigation System */}
@@ -3652,6 +3733,7 @@ export default function App() {
                       injuriesObserved: reportForm.injuries_observed,
                       redacted: redactAnonymously,
                       photoCount: photos.length,
+                      goldenHourStart: goldenHourStart ? new Date(goldenHourStart).toLocaleTimeString() : undefined,
                     });
                   }}
                   className="flex-1 sm:flex-initial px-4 py-2 bg-[#4DABFF] hover:bg-[#328ae0] text-slate-950 font-mono text-xs font-bold uppercase tracking-wide rounded-lg transition-colors"

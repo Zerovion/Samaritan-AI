@@ -400,7 +400,64 @@ ${conversationText}
   }
 });
 
-// 4. API: TTS proxy
+// 4. API: Nearest Hospital via Google Places
+app.get("/api/nearest-hospital", async (req, res) => {
+  const lat = parseFloat(req.query.lat as string);
+  const lng = parseFloat(req.query.lng as string);
+
+  if (isNaN(lat) || isNaN(lng)) {
+    return res.status(400).json({ error: "Missing or invalid lat/lng parameters." });
+  }
+
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) {
+    // Graceful fallback — no key configured
+    return res.json({
+      fallback: true,
+      name: "Nearest Hospital",
+      address: "Enable GOOGLE_PLACES_API_KEY for real results",
+      phone: "112",
+      distance: null,
+    });
+  }
+
+  try {
+    // Google Places Nearby Search — hospitals within 5km
+    const placesUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&rankby=distance&type=hospital&key=${apiKey}`;
+    const placesRes = await fetch(placesUrl);
+    const placesData = await placesRes.json() as any;
+
+    if (!placesData.results || placesData.results.length === 0) {
+      return res.json({ fallback: true, name: "No hospitals found nearby", address: "", phone: "112", distance: null });
+    }
+
+    const top = placesData.results[0];
+    const placeId = top.place_id;
+    const name = top.name;
+    const vicinity = top.vicinity || "";
+
+    // Haversine distance in km
+    const toRad = (v: number) => (v * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(top.geometry.location.lat - lat);
+    const dLng = toRad(top.geometry.location.lng - lng);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat)) * Math.cos(toRad(top.geometry.location.lat)) * Math.sin(dLng / 2) ** 2;
+    const distanceKm = (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1);
+
+    // Place Details — get phone number
+    const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=formatted_phone_number&key=${apiKey}`;
+    const detailsRes = await fetch(detailsUrl);
+    const detailsData = await detailsRes.json() as any;
+    const phone = detailsData.result?.formatted_phone_number || "112";
+
+    res.json({ fallback: false, name, address: vicinity, phone, distance: `${distanceKm} km` });
+  } catch (error: any) {
+    console.error("Nearest Hospital Error:", error.message || error);
+    res.json({ fallback: true, name: "Hospital lookup failed", address: "Call 112 for dispatch", phone: "112", distance: null });
+  }
+});
+
+// 5. API: TTS proxy
 app.get("/api/tts", async (req, res) => {
   const text = req.query.text as string;
   const lang = (req.query.lang as string || "en").toLowerCase();
