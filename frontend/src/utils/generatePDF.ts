@@ -9,10 +9,11 @@ interface PDFOptions {
   injuriesObserved: string;
   redacted: boolean;
   photoCount: number;
+  goldenHourStart?: string; // e.g. "14:32:07"
 }
 
 export function generateWitnessPDF(opts: PDFOptions): void {
-  const { report, witnessName, witnessPhone, vehiclesInvolved, injuriesObserved, redacted, photoCount } = opts;
+  const { report, witnessName, witnessPhone, vehiclesInvolved, injuriesObserved, redacted, photoCount, goldenHourStart } = opts;
 
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const pageW = doc.internal.pageSize.getWidth();
@@ -113,6 +114,16 @@ export function generateWitnessPDF(opts: PDFOptions): void {
   text("VEHICLES INVOLVED", margin + contentW / 2 + 6, y + 4.5, { size: 6.5, color: "#8080A0", bold: true });
   text(vehiclesInvolved || "Under investigation", margin + contentW / 2 + 6, y + 10, { size: 8.5, color: "#1A1A2E" });
   y += 19;
+
+  // Golden Hour start time row
+  if (goldenHourStart) {
+    box(margin, y, contentW, 14, "#0F1A10", "#1D9E75");
+    doc.setFillColor("#1D9E75");
+    doc.rect(margin, y, 2, 14, "F");
+    text("GOLDEN HOUR TIMER — SESSION START", margin + 5, y + 4.5, { size: 6.5, color: "#60C080", bold: true });
+    text(`Emergency response clock started at ${goldenHourStart}  ·  First 60 minutes are critical for survival`, margin + 5, y + 10, { size: 8, color: "#A0F0C0" });
+    y += 19;
+  }
 
   // Injuries observed
   box(margin, y, contentW, 14, "#FFF5F5", "#F5C0C0");
