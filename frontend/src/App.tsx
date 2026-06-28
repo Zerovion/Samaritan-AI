@@ -39,7 +39,8 @@ import {
   Bike,
   Car,
   Share2,
-  MessageSquare
+  MessageSquare,
+  Star
 } from "lucide-react";
 import { Message, LocationTelemetry, SamaritanReport, EmergencyStep } from "./types";
 import { generateWitnessPDF } from "./utils/generatePDF";
@@ -277,6 +278,16 @@ export default function App() {
     fallback: boolean;
     loading: boolean;
   }>({ name: "", address: "", phone: "112", distance: null, fallback: false, loading: false });
+
+  // Bystander Confidence Score state
+  const [confidenceScore, setConfidenceScore] = useState<{
+    score: number;
+    positives: string[];
+    improvement: string;
+    fallback: boolean;
+    loading: boolean;
+    visible: boolean;
+  }>({ score: 0, positives: [], improvement: "", fallback: false, loading: false, visible: false });
 
   // ── Shake-to-activate state ──────────────────────────────────────────────
   const [shakeConfirmVisible, setShakeConfirmVisible] = useState(false);
@@ -954,14 +965,31 @@ export default function App() {
   // Exit Emergency cleanly
   const resetEmergencySession = () => {
     if (window.confirm("Are you sure you want to stop this rescue workflow? All captured proof logs will be stored in your current state.")) {
+
+      // Trigger confidence score before clearing state
+      setConfidenceScore({ score: 0, positives: [], improvement: "", fallback: false, loading: true, visible: true });
+      fetch("/api/confidence-score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages,
+          activeStep,
+          photosCount: photos.length,
+          emergencyServicesCalled: messages.some(m => m.content.toLowerCase().includes("112") || m.content.toLowerCase().includes("ambulance")),
+          goldenHourElapsed,
+          victimType
+        })
+      })
+        .then(r => r.json())
+        .then(data => setConfidenceScore(prev => ({ ...prev, ...data, loading: false })))
+        .catch(() => setConfidenceScore({ score: 5, positives: ["You activated the emergency workflow.", "You stayed engaged with the rescue protocol.", "You completed the session."], improvement: "Practice calling 112 out loud next time.", fallback: true, loading: false, visible: true }));
+
       setEmergencyActive(false);
       setCprActive(false);
       setGoldenHourStart(null);
       setGoldenHourElapsed(0);
       try {
-        if ('speechSynthesis' in window) {
-          window.speechSynthesis.cancel();
-        }
+        if ('speechSynthesis' in window) window.speechSynthesis.cancel();
       } catch (_) {}
       setSpeechSynthesisActive(false);
     }
@@ -1282,7 +1310,96 @@ export default function App() {
 
       {/* 1. HOME SCREEN (When active emergency is false) */}
       {!emergencyActive ? (
-        showVictimSelector ? (
+        <>
+        {/* Bystander Confidence Score Debrief Card */}
+        {confidenceScore.visible && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <div className="w-full max-w-md bg-[#111116] border border-white/10 rounded-3xl p-6 shadow-[0_0_60px_rgba(99,102,241,0.2)] animate-fadeIn">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-5">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
+                    <Star className="w-5 h-5 text-indigo-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wide">Bystander Debrief</h3>
+                    <p className="text-[10px] text-zinc-500 font-mono">AI performance analysis</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setConfidenceScore(prev => ({ ...prev, visible: false }))}
+                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {confidenceScore.loading ? (
+                <div className="flex flex-col items-center gap-4 py-8">
+                  <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin" />
+                  <p className="text-sm text-zinc-400 font-mono">Gemini is analysing your session...</p>
+                </div>
+              ) : (
+                <>
+                  {/* Score Ring */}
+                  <div className="flex flex-col items-center gap-1 py-5">
+                    <div className={`text-6xl font-black tabular-nums ${
+                      confidenceScore.score >= 8 ? "text-emerald-400" :
+                      confidenceScore.score >= 5 ? "text-amber-400" : "text-red-400"
+                    }`}>
+                      {confidenceScore.score}<span className="text-2xl text-zinc-500 font-normal">/10</span>
+                    </div>
+                    <p className="text-xs text-zinc-400 font-mono uppercase tracking-widest mt-1">
+                      {confidenceScore.score >= 8 ? "Excellent Response" :
+                       confidenceScore.score >= 5 ? "Good Effort" : "Keep Practising"}
+                    </p>
+                    {/* Score bar */}
+                    <div className="w-full bg-white/5 rounded-full h-1.5 mt-3">
+                      <div
+                        className={`h-1.5 rounded-full transition-all duration-700 ${
+                          confidenceScore.score >= 8 ? "bg-emerald-400" :
+                          confidenceScore.score >= 5 ? "bg-amber-400" : "bg-red-400"
+                        }`}
+                        style={{ width: `${confidenceScore.score * 10}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Positives */}
+                  <div className="flex flex-col gap-2 mb-4">
+                    {confidenceScore.positives.map((p, i) => (
+                      <div key={i} className="flex items-start gap-2.5 bg-emerald-500/5 border border-emerald-500/15 rounded-xl px-3 py-2.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                        <span className="text-xs text-zinc-300 leading-relaxed">{p}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Improvement tip */}
+                  {confidenceScore.improvement && (
+                    <div className="flex items-start gap-2.5 bg-amber-500/5 border border-amber-500/20 rounded-xl px-3 py-2.5 mb-5">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                      <span className="text-xs text-zinc-300 leading-relaxed">{confidenceScore.improvement}</span>
+                    </div>
+                  )}
+
+                  {confidenceScore.fallback && (
+                    <p className="text-[10px] text-zinc-600 font-mono text-center mb-3">Offline score — AI analysis unavailable</p>
+                  )}
+
+                  <button
+                    onClick={() => setConfidenceScore(prev => ({ ...prev, visible: false }))}
+                    className="w-full py-2.5 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 text-xs font-bold uppercase tracking-wider transition-colors"
+                  >
+                    Close Debrief
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {showVictimSelector ? (
           <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 relative z-10 max-w-4xl w-full mx-auto my-auto min-h-[85vh] animate-fadeIn">
             <div className="w-full bg-[#111116] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-[0_0_50px_rgba(225,29,72,0.15)] relative overflow-hidden backdrop-blur-md">
               
@@ -1698,7 +1815,8 @@ export default function App() {
               </div>
             </div>
           </div>
-        )
+        )}
+        </>
       ) : (
         /* Emergency Workflow layout activated */
         <>

@@ -457,7 +457,93 @@ app.get("/api/nearest-hospital", async (req, res) => {
   }
 });
 
-// 5. API: TTS proxy
+// 5. API: Bystander Confidence Score
+app.post("/api/confidence-score", async (req, res) => {
+  const { messages, activeStep, photosCount, emergencyServicesCalled, goldenHourElapsed, victimType } = req.body;
+
+  // Rule-based fallback score when Gemini unavailable
+  const buildFallback = () => {
+    let score = 4;
+    if (activeStep >= 5) score += 2;
+    if (activeStep >= 8) score += 1;
+    if (photosCount > 0) score += 1;
+    if (emergencyServicesCalled) score += 1;
+    if (messages?.length > 3) score += 1;
+    score = Math.min(10, score);
+    return {
+      score,
+      positives: [
+        "You activated the emergency workflow and started guiding the victim.",
+        activeStep >= 3 ? "You progressed through multiple critical steps." : "You took immediate action under pressure.",
+        photosCount > 0 ? "You captured photographic evidence for legal protection." : "You stayed engaged with the rescue protocol."
+      ],
+      improvement: activeStep < 5
+        ? "Try to progress further through the 10-step protocol in your next practice session."
+        : "Practice calling 112 out loud to build muscle memory for real emergencies.",
+      fallback: true
+    };
+  };
+
+  if (!checkGeminiActive()) return res.json(buildFallback());
+
+  try {
+    const ai = getGeminiClient();
+
+    const conversationText = (messages || [])
+      .map((m: any) => `${m.role === "user" ? "Bystander" : "Guide"}: ${m.content}`)
+      .join("\n");
+
+    const prompt = `
+You are an emergency response trainer evaluating a bystander's performance during a road accident simulation.
+
+Session data:
+- Steps completed: ${activeStep} of 10
+- Victim type: ${victimType || "adult"}
+- Photos captured: ${photosCount || 0}
+- 112 called: ${emergencyServicesCalled ? "Yes" : "Not logged"}
+- Time elapsed: ${goldenHourElapsed ? Math.floor(goldenHourElapsed / 60) + " minutes" : "Unknown"}
+- Conversation turns: ${messages?.length || 0}
+
+Conversation transcript:
+${conversationText || "No conversation recorded."}
+
+Evaluate the bystander's performance. Be encouraging but honest. Focus on what they actually did.
+Return ONLY a JSON object with these exact fields:
+{
+  "score": <integer 1-10>,
+  "positives": [<string>, <string>, <string>],
+  "improvement": <string — one specific actionable tip>
+}
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: "application/json",
+        temperature: 0.4,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            score: { type: Type.INTEGER },
+            positives: { type: Type.ARRAY, items: { type: Type.STRING } },
+            improvement: { type: Type.STRING }
+          },
+          required: ["score", "positives", "improvement"]
+        }
+      }
+    });
+
+    const data = JSON.parse(response.text || "{}");
+    res.json({ ...data, fallback: false });
+
+  } catch (error: any) {
+    console.error("Confidence Score Error:", error.message || error);
+    res.json(buildFallback());
+  }
+});
+
+// 6. API: TTS proxy
 app.get("/api/tts", async (req, res) => {
   const text = req.query.text as string;
   const lang = (req.query.lang as string || "en").toLowerCase();
